@@ -271,22 +271,60 @@ Options:
 
 **ALWAYS use the pending review pattern, even for single comments. NEVER submit/publish the review.**
 
-```bash
-# Create PENDING review (no event field — this keeps it as a draft)
-gh api repos/:owner/:repo/pulls/<PR_NUMBER>/reviews \
-  -X POST \
-  -f commit_id="<COMMIT_SHA>" \
-  -f 'comments[][path]=path/to/file.ts' \
-  -F 'comments[][line]=<LINE_NUMBER>' \
-  -f 'comments[][side]=RIGHT' \
-  -f 'comments[][body]=Comment text
+**IMPORTANT: Use JSON input (`--input -`), not `-f` array syntax.** The `-f 'comments[][...]'` array syntax is unreliable with `gh api` and produces GraphQL errors. Always pipe a JSON body via `--input -` instead.
 
-```suggestion
-// suggested code here
+**IMPORTANT: Use `position` (diff hunk position), not `line`/`side`.** The review comments API requires `position` — the 1-based line index within the file's unified diff. The `line` and `side` fields are NOT valid for `DraftPullRequestReviewComment` and will cause 422 errors.
+
+#### Calculating diff positions
+
+The `position` for each comment must be computed from the PR diff. Use this approach:
+
+```bash
+# Get the diff and calculate positions with a Python helper
+python3 -c "
+import subprocess
+
+diff = subprocess.run(['gh', 'pr', 'diff', '<PR_NUMBER>', '--repo', '<OWNER>/<REPO>'], capture_output=True, text=True).stdout
+
+file = ''
+pos = 0
+
+for line in diff.split('\n'):
+    if line.startswith('diff --git'):
+        file = ''
+        pos = 0
+    elif line.startswith('+++ b/'):
+        file = line[6:]
+        pos = 0
+    elif line.startswith('@@'):
+        pos = 0
+
+    if file:
+        pos += 1
+        # Add search terms for lines you want to comment on
+        if 'your_search_term' in line:
+            print(f'file={file} pos={pos}')
+"
 ```
 
-Additional explanation...' \
-  --jq '{id, state}'
+The `position` value is the line count from the start of the file's diff hunk (reset at each `@@` header and each new file). Use the computed position in the JSON body below.
+
+#### Creating the pending review
+
+```bash
+# Create PENDING review via JSON input (no event field — this keeps it as a draft)
+cat <<'JSONEOF' | gh api repos/:owner/:repo/pulls/<PR_NUMBER>/reviews -X POST --input -
+{
+  "commit_id": "<COMMIT_SHA>",
+  "comments": [
+    {
+      "path": "path/to/file.ts",
+      "position": <DIFF_POSITION>,
+      "body": "Comment text\n\n```suggestion\n// suggested code here\n```\n\nAdditional explanation..."
+    }
+  ]
+}
+JSONEOF
 
 # Returns: {"id": <REVIEW_ID>, "state": "PENDING"}
 # STOP HERE. Do NOT call the /reviews/<ID>/events endpoint.
@@ -313,29 +351,25 @@ gh pr view <PR_NUMBER> --json commits --jq '.commits[-1].oid'
 gh repo view --json owner,name
 ```
 
-### Required Parameters
+### Required Parameters (JSON body)
 
 - `commit_id`: Latest commit SHA from the PR
-- `comments[][path]`: File path relative to repo root
-- `comments[][line]`: End line number (use `-F` for numbers)
-- `comments[][side]`: Use `RIGHT` for added/modified lines (most common), `LEFT` for deleted lines
-- `comments[][body]`: Comment text with optional ```suggestion block
-
-### Optional Parameters
-
-- `comments[][start_line]`: For multi-line code suggestions (use `-F`)
+- `comments[].path`: File path relative to repo root
+- `comments[].position`: Diff hunk position (1-based line index within the file's unified diff — see "Calculating diff positions" above)
+- `comments[].body`: Comment text with optional ```suggestion block
 - `event`: ALWAYS omit — we only create PENDING reviews. NEVER pass an event field.
 
-### Syntax Rules
+### API Syntax Rules
 
-- Use single quotes around parameters with `[]`: `'comments[][path]'`
-- Use `-f` for string values
-- Use `-F` for numeric values (line numbers)
-- Use triple backticks with `suggestion` identifier for code suggestions
+- **Always use JSON input** via `cat <<'JSONEOF' | gh api ... --input -` for review creation
+- **Never use `-f`/`-F` array syntax** (`-f 'comments[][path]=...'`) — it maps to GraphQL types that reject `line`/`side` fields and is unreliable for multi-comment reviews
+- **Use `position`, not `line`/`side`** — the `line` and `side` fields are NOT valid on `DraftPullRequestReviewComment` and will produce 422 errors
+- Use triple backticks with `suggestion` identifier for code suggestions (escape as `\n` in JSON strings)
 
 **DON'T:**
-- Use double quotes around `comments[][]` parameters
-- Mix up `-f` and `-F` flags
+- Use `-f 'comments[][...]'` array syntax (use JSON input instead)
+- Use `line` or `side` fields (use `position` instead)
+- Forget to calculate diff positions from the actual PR diff
 - Forget to get commit SHA first
 
 ## Code Suggestions Format
@@ -381,14 +415,19 @@ const example = "value";
 | Mistake | Fix |
 |---------|-----|
 | Submitting/publishing the review | NEVER submit — only create pending reviews. The user publishes on GitHub. |
+| Using `-f 'comments[][...]'` array syntax | Use JSON input via `--input -` instead — the array syntax is unreliable and maps to GraphQL types |
+| Using `line`/`side` instead of `position` | Use `position` (diff hunk position). `line` and `side` are NOT valid on `DraftPullRequestReviewComment` |
+| Using file line numbers as position | `position` is the line index within the diff, NOT the file line number. Calculate it from `gh pr diff` output |
 | "Only one comment so no need for pending" | Use pending anyway - consistent workflow, allows adding more later |
-| Forgetting single quotes around `comments[][]` | Always quote: `'comments[][path]'` not `comments[][path]` |
 | Not getting commit SHA | Run `gh pr view <NUMBER> --json commits --jq '.commits[-1].oid'` |
 | Calling the /events endpoint | FORBIDDEN — never call `/reviews/<ID>/events`. User publishes manually. |
 
 ## Red Flags - You're About to Violate the Pattern
 
 Stop if you're thinking:
+- "I'll use `-f 'comments[][line]=...'` with the array syntax"
+- "I'll use `line` and `side` parameters for comment placement"
+- "The file line number is the same as the diff position"
 - "User said ASAP so I'll skip pending review"
 - "Only one comment so I'll post directly"
 - "Time pressure means I should post immediately"
@@ -448,26 +487,40 @@ You'll review and publish it yourself on GitHub.
 Ready to create this draft review?
 ```
 
-**Step 2: After approval, create the pending review (DO NOT SUBMIT)**
+**Step 2: Calculate diff positions**
+
+```bash
+# Use the Python helper from "Calculating diff positions" to find
+# the position values for each line you want to comment on.
+# Example output: file=src/auth.ts pos=20, file=src/auth.ts pos=35, file=tests/auth.test.ts pos=12
+```
+
+**Step 3: After approval, create the pending review via JSON input (DO NOT SUBMIT)**
 
 ```bash
 # Create pending review with multiple comments — this is a DRAFT only
-gh api repos/:owner/:repo/pulls/123/reviews \
-  -X POST \
-  -f commit_id="abc123" \
-  -f 'comments[][path]=src/auth.ts' \
-  -F 'comments[][line]=20' \
-  -f 'comments[][side]=RIGHT' \
-  -f 'comments[][body]=First issue...' \
-  -f 'comments[][path]=src/auth.ts' \
-  -F 'comments[][line]=35' \
-  -f 'comments[][side]=RIGHT' \
-  -f 'comments[][body]=Second issue...' \
-  -f 'comments[][path]=tests/auth.test.ts' \
-  -F 'comments[][line]=12' \
-  -f 'comments[][side]=RIGHT' \
-  -f 'comments[][body]=Third issue...' \
-  --jq '{id, state}'
+cat <<'JSONEOF' | gh api repos/:owner/:repo/pulls/123/reviews -X POST --input -
+{
+  "commit_id": "abc123",
+  "comments": [
+    {
+      "path": "src/auth.ts",
+      "position": 20,
+      "body": "First issue..."
+    },
+    {
+      "path": "src/auth.ts",
+      "position": 35,
+      "body": "Second issue..."
+    },
+    {
+      "path": "tests/auth.test.ts",
+      "position": 12,
+      "body": "Third issue..."
+    }
+  ]
+}
+JSONEOF
 
 # STOP HERE. Returns {"id": <REVIEW_ID>, "state": "PENDING"}
 # Tell the user: "Draft review created. Visit the PR on GitHub to review and publish it."

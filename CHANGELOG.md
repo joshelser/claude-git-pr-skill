@@ -87,6 +87,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Red flags updated** - Added warnings against submitting reviews on behalf of the user
 - **Event type selection removed from skill** - User chooses APPROVE/COMMENT/REQUEST_CHANGES themselves when publishing on GitHub
 
+### Fixed
+- **API call syntax** - Replaced `-f 'comments[][...]'` array syntax with JSON input (`--input -`) which is reliable and avoids GraphQL type mapping issues
+- **Comment position parameter** - Replaced `line`/`side` parameters with `position` (diff hunk position). The `line` and `side` fields are not valid on `DraftPullRequestReviewComment` and caused 422 errors
+- **Added diff position calculation guide** - Documented how to compute `position` values from PR diff output using a Python helper script
+
 ---
 
 ## How to Update This Changelog
