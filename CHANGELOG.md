@@ -80,6 +80,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Draft-only reviews** - Skill now NEVER publishes/submits reviews to GitHub. It only creates pending (draft) reviews. The user must publish them manually on GitHub.
+- **Removed submit/events endpoint usage** - The `/reviews/<ID>/events` endpoint is now explicitly forbidden
+- **Updated all user-facing language** - "Post" replaced with "Draft" throughout; all prompts clarify that reviews are draft-only
+- **Red flags updated** - Added warnings against submitting reviews on behalf of the user
+- **Event type selection removed from skill** - User chooses APPROVE/COMMENT/REQUEST_CHANGES themselves when publishing on GitHub
+
 ---
 
 ## How to Update This Changelog

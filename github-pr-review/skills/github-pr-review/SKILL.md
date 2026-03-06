@@ -8,9 +8,9 @@ allowed-tools: Bash(gh:*)
 
 ## Overview
 
-Full-lifecycle PR review skill: **analyze** a PR with parallel sub-agents, present findings, then optionally **post** a review via `gh api`. The analysis phase launches three read-only agents in parallel (change summary + architecture + anti-patterns) and aggregates their results into a single report. The posting phase uses pending reviews to batch comments.
+Full-lifecycle PR review skill: **analyze** a PR with parallel sub-agents, present findings, then optionally **create a draft (pending) review** via `gh api`. The analysis phase launches three read-only agents in parallel (change summary + architecture + anti-patterns) and aggregates their results into a single report. The drafting phase creates a pending review with comments — it is NEVER submitted/published by this skill.
 
-**CRITICAL: Always get explicit user approval before posting any review comments.** Show exactly what will be posted and ask for yes/no confirmation using AskUserQuestion.
+**CRITICAL: This skill NEVER publishes reviews to GitHub.** It only creates draft (pending) reviews. The user publishes them manually on GitHub. Always get explicit user approval before even creating a draft, and show exactly what will be drafted using AskUserQuestion.
 
 ---
 
@@ -199,6 +199,7 @@ Author: <author> | Changes: +<additions> -<deletions> across <N> files
 
 ### Suggested Verdict
 <APPROVE | COMMENT | REQUEST_CHANGES> — <one sentence reasoning>
+(This is a suggestion only — the user will choose the actual verdict when they publish the review on GitHub.)
 ```
 
 Rules for the suggested verdict:
@@ -214,60 +215,64 @@ Use AskUserQuestion with these options:
 Question: "How would you like to proceed with these findings?"
 Header: "PR Review"
 Options:
-  - Post all findings as PR review: Creates a pending review with all findings as comments
-  - Select which findings to post: Let me choose which findings to include
-  - Done, don't post: End the review without posting
+  - Draft all findings as review comments: Creates a draft (pending) review — NOT published, only visible to you
+  - Select which findings to draft: Let me choose which findings to include in the draft
+  - Done, don't draft anything: End the review without creating a draft
 ```
 
-If the user selects "Post all findings" or "Select which findings", transition to the **Review Posting Workflow** below. Map each finding to a review comment using the file path and line number from the findings table.
+If the user selects "Draft all findings" or "Select which findings", transition to the **Draft Review Workflow** below. Map each finding to a review comment using the file path and line number from the findings table.
+
+**CRITICAL: This only creates a DRAFT (pending) review on GitHub. It is NEVER submitted/published. The user must manually submit the review on GitHub when they are ready.**
 
 If the user selects "Done", end cleanly.
 
 ---
 
-## Review Posting Workflow
+## Draft Review Workflow
 
-Use this workflow to post review comments to GitHub. This is used either as the second phase after automated analysis, or standalone when the user wants to post a review directly.
+Use this workflow to create a **draft (pending) review** on GitHub. The review is NEVER submitted/published — only the user can do that manually on GitHub.
+
+**CRITICAL: This skill MUST NEVER call the submit/events endpoint. We only create pending reviews. The user publishes them manually on GitHub.**
 
 ### When to Use
 
-- After automated analysis when user wants to post findings
-- Reviewing pull requests manually
-- Adding code suggestions to PRs
-- Posting review comments with the gh CLI
+- After automated analysis when user wants to draft findings as review comments
+- Preparing review comments for a PR
+- Adding code suggestions to PRs as a draft
 
 ### Core Workflow
 
 **REQUIRED STEPS (do not skip):**
 
-1. **Draft the review** - Analyze PR and prepare all comments
-2. **Show user exactly what will be posted** - Use AskUserQuestion with yes/no
+1. **Prepare the review** - Analyze PR and prepare all comments
+2. **Show user exactly what will be drafted** - Use AskUserQuestion with yes/no
 3. **Get explicit approval** - Wait for user confirmation
-4. **Post the review** - Only after approval
+4. **Create the draft review** - Only after approval. This creates a PENDING review (visible only to the reviewer, NOT published)
+
+**NEVER proceed to submit/publish the review. The user will do that on GitHub.**
 
 ### Approval Pattern
 
-Before posting ANY review, use AskUserQuestion to show:
+Before creating ANY draft review, use AskUserQuestion to show:
 - File and line number for each comment
 - Exact comment text (including code suggestions)
-- Event type (APPROVE/REQUEST_CHANGES/COMMENT)
-- Overall review message
+- A reminder that this creates a draft only — they will publish it themselves on GitHub
 
 **Example:**
 ```
-Question: "Ready to post this review?"
-Header: "PR Review"
+Question: "Ready to create this draft review? (You'll publish it yourself on GitHub)"
+Header: "PR Review — Draft Only"
 Options:
-  - Yes, post it: Posts the review as shown
+  - Yes, create draft: Creates a pending review visible only to you — NOT published
   - No, let me revise: Allows refinement
 ```
 
 ### Technical Workflow
 
-**ALWAYS use the pending review pattern, even for single comments:**
+**ALWAYS use the pending review pattern, even for single comments. NEVER submit/publish the review.**
 
 ```bash
-# Step 1: Create PENDING review (no event field)
+# Create PENDING review (no event field — this keeps it as a draft)
 gh api repos/:owner/:repo/pulls/<PR_NUMBER>/reviews \
   -X POST \
   -f commit_id="<COMMIT_SHA>" \
@@ -284,23 +289,17 @@ Additional explanation...' \
   --jq '{id, state}'
 
 # Returns: {"id": <REVIEW_ID>, "state": "PENDING"}
-
-# Step 2: Submit the pending review
-gh api repos/:owner/:repo/pulls/<PR_NUMBER>/reviews/<REVIEW_ID>/events \
-  -X POST \
-  -f event="COMMENT" \
-  -f body="Optional overall review message"
+# STOP HERE. Do NOT call the /reviews/<ID>/events endpoint.
+# The user will submit the review themselves on GitHub.
 ```
 
-## Event Types
+**NEVER call the submit endpoint.** The following is FORBIDDEN:
+```
+# DO NOT DO THIS — never submit/publish the review
+gh api repos/:owner/:repo/pulls/<PR_NUMBER>/reviews/<REVIEW_ID>/events ...
+```
 
-Choose the appropriate event type when submitting:
-
-| Event Type | When to Use | Example Situations |
-|------------|-------------|-------------------|
-| `APPROVE` | Non-blocking suggestions, PR is ready to merge | Minor style improvements, optional refactoring |
-| `REQUEST_CHANGES` | Blocking issues that must be fixed | Security vulnerabilities, bugs, failing tests |
-| `COMMENT` | Neutral feedback, questions | Asking for clarification, neutral observations |
+The user will choose the event type (APPROVE, REQUEST_CHANGES, COMMENT) themselves when they publish the review on GitHub.
 
 ## Quick Reference
 
@@ -325,7 +324,7 @@ gh repo view --json owner,name
 ### Optional Parameters
 
 - `comments[][start_line]`: For multi-line code suggestions (use `-F`)
-- `event`: Omit for PENDING, or use `COMMENT`/`APPROVE`/`REQUEST_CHANGES`
+- `event`: ALWAYS omit — we only create PENDING reviews. NEVER pass an event field.
 
 ### Syntax Rules
 
@@ -381,11 +380,11 @@ const example = "value";
 
 | Mistake | Fix |
 |---------|-----|
-| Posting immediately under time pressure | Still create pending review first - can submit immediately after |
+| Submitting/publishing the review | NEVER submit — only create pending reviews. The user publishes on GitHub. |
 | "Only one comment so no need for pending" | Use pending anyway - consistent workflow, allows adding more later |
 | Forgetting single quotes around `comments[][]` | Always quote: `'comments[][path]'` not `comments[][path]` |
 | Not getting commit SHA | Run `gh pr view <NUMBER> --json commits --jq '.commits[-1].oid'` |
-| Using wrong event type | Security/bugs → REQUEST_CHANGES, Style → APPROVE, Questions → COMMENT |
+| Calling the /events endpoint | FORBIDDEN — never call `/reviews/<ID>/events`. User publishes manually. |
 
 ## Red Flags - You're About to Violate the Pattern
 
@@ -399,29 +398,37 @@ Stop if you're thinking:
 - **"The approval step slows things down"**
 - **"I'll check for gh later, let me draft the review first"**
 - **"gh is probably installed, no need to check"**
+- **"I'll submit/publish the review since the user approved the draft"**
+- **"I'll call the /events endpoint to finalize it"**
+- **"The user wants it published so I'll submit it for them"**
 
-**All of these mean: STOP. Check gh first, get explicit approval, then use pending review.**
+**All of these mean: STOP. Check gh first, get explicit approval, create a PENDING review only, and NEVER submit/publish it.**
 
-**Why pending reviews?** Take the same time (2 API calls vs 1) but provide critical benefits:
-- Can add more comments if you find additional issues while writing the first
-- Can review your own comments before submitting
+**Why draft-only?** This skill NEVER publishes reviews. Only the user can do that:
+- The user maintains full control over what gets published on their behalf
+- They can review, edit, or discard draft comments before publishing
+- They choose the event type (APPROVE/COMMENT/REQUEST_CHANGES) themselves
+- No risk of accidentally publishing something incorrect or poorly worded
+
+**Why pending reviews?** Pending reviews are GitHub's draft mechanism:
+- Comments are batched together into one coherent review
+- Can add more comments if you find additional issues
+- User can review all comments on GitHub before publishing
 - Consistent workflow regardless of urgency
-- Batches all comments into one notification for the PR author
 
-**Why approval step?** Users need to see exactly what will be posted publicly:
-- Review comments are public and permanent
+**Why approval step?** Users need to see what will be drafted:
 - Code suggestions might be incorrect
 - Tone might need adjustment
-- User might want to refine the message
+- User might want to refine the message before it becomes a draft
 
-## Complete Example with Approval
+## Complete Example
 
-**Step 1: Draft and show for approval**
+**Step 1: Prepare and show for approval**
 
-First, analyze the PR and draft your comments. Then use AskUserQuestion:
+First, analyze the PR and prepare your comments. Then use AskUserQuestion:
 
 ```
-I've reviewed PR #123 and found 3 issues. Here's what I'll post:
+I've reviewed PR #123 and found 3 issues. Here's what I'll add to a draft review:
 
 **Comment 1:** src/auth.ts line 20
 Token expiry validation is missing...
@@ -435,16 +442,16 @@ Missing error handling...
 Missing error case test...
 [code suggestion shown]
 
-**Event Type:** REQUEST_CHANGES
-**Overall message:** "Found 3 issues that need to be addressed before merging."
+This will create a DRAFT (pending) review — it will NOT be published.
+You'll review and publish it yourself on GitHub.
 
-Ready to post this review?
+Ready to create this draft review?
 ```
 
-**Step 2: After approval, post the review**
+**Step 2: After approval, create the pending review (DO NOT SUBMIT)**
 
 ```bash
-# Create pending review with multiple comments
+# Create pending review with multiple comments — this is a DRAFT only
 gh api repos/:owner/:repo/pulls/123/reviews \
   -X POST \
   -f commit_id="abc123" \
@@ -462,25 +469,22 @@ gh api repos/:owner/:repo/pulls/123/reviews \
   -f 'comments[][body]=Third issue...' \
   --jq '{id, state}'
 
-# Submit with appropriate event type
-gh api repos/:owner/:repo/pulls/123/reviews/<REVIEW_ID>/events \
-  -X POST \
-  -f event="REQUEST_CHANGES" \
-  -f body="Found 3 issues that need to be addressed before merging."
+# STOP HERE. Returns {"id": <REVIEW_ID>, "state": "PENDING"}
+# Tell the user: "Draft review created. Visit the PR on GitHub to review and publish it."
+# NEVER call the /events endpoint to submit.
 ```
 
 ## Real-World Impact
 
 **Without this pattern:**
+- Risk of accidentally publishing incomplete or incorrect reviews
 - Multiple separate notifications spam the PR author
-- Can't batch feedback together
-- Easy to forget issues while reviewing
-- Inconsistent workflow based on perceived urgency
+- No chance to review comments before they go live
 
 **With this pattern:**
-- All feedback in one coherent review
-- PR author gets one notification with full context
-- Can refine comments before posting
+- All comments batched into one draft review
+- User has full control — they review, edit, and publish on their own terms
+- No risk of the skill publishing something the user didn't intend
 - Professional, organized reviews
 
 ## Error Handling
