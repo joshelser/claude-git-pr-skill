@@ -1,74 +1,249 @@
 ---
 name: github-pr-review
 description: Use when reviewing GitHub pull requests with gh CLI - creates pending reviews with code suggestions, batches comments, and chooses appropriate event types (COMMENT/APPROVE/REQUEST_CHANGES)
-allowed-tools: AskUserQuestion
+allowed-tools: Bash(gh:*)
 ---
 
 # GitHub PR Review
 
 ## Overview
 
-Workflow for reviewing GitHub pull requests using `gh api` to create pending reviews with code suggestions. **Always use pending reviews to batch comments, even under time pressure.**
+Full-lifecycle PR review skill: **analyze** a PR with parallel sub-agents, present findings, then optionally **post** a review via `gh api`. The analysis phase launches three read-only agents in parallel (change summary + architecture + anti-patterns) and aggregates their results into a single report. The posting phase uses pending reviews to batch comments.
 
 **CRITICAL: Always get explicit user approval before posting any review comments.** Show exactly what will be posted and ask for yes/no confirmation using AskUserQuestion.
 
-## When to Use
+---
 
-- Reviewing pull requests
+## Automated PR Analysis
+
+Use this workflow when you need to review a PR. It fetches the diff, launches three parallel analysis agents, and presents a consolidated report.
+
+### Step 1: Fetch PR Data
+
+```bash
+# Get PR metadata
+gh pr view <PR_NUMBER> --json title,author,additions,deletions,changedFiles,commits,baseRefName,headRefName
+
+# Get the full diff
+gh pr diff <PR_NUMBER>
+
+# Get the latest commit SHA (needed if posting later)
+gh pr view <PR_NUMBER> --json commits --jq '.commits[-1].oid'
+```
+
+Store the diff text, PR title, author, additions/deletions counts, and changed file count for use in the agent prompts.
+
+### Step 2: Launch Three Explore Sub-Agents in Parallel
+
+Launch **all three agents in a single message** so they run concurrently. All use `subagent_type: "Explore"` (read-only, fast, has access to Glob/Grep/Read).
+
+IMPORTANT: When you need to view specific line ranges from a file, use the Read tool with offset and limit parameters (e.g., offset=40, limit=20 to read lines 40-59). Do NOT use Bash with sed, head, or tail — those require permission prompts and will interrupt the review.
+
+For large PRs (500+ changed lines), include this instruction in all three prompts: "This is a large PR. Prioritize the most architecturally significant files. If you cannot cover everything, note which files were skipped and why."
+
+#### Agent A: Architecture Review
+
+Prompt template (fill in `{DIFF}`, `{PR_TITLE}`, `{PR_AUTHOR}`):
+
+```
+You are reviewing PR "{PR_TITLE}" by {PR_AUTHOR}. Your job is to assess the architectural quality of the changes as a function of the entire application.
+
+Here is the full diff:
+
+<diff>
+{DIFF}
+</diff>
+
+IMPORTANT: Use Glob, Grep, and Read to explore the surrounding codebase. Check whether new code is consistent with existing patterns, understand how it fits into the broader architecture, and verify that similar problems are solved similarly elsewhere.
+
+IMPORTANT: When you need to view specific line ranges from a file, use the Read tool with offset and limit parameters (e.g., offset=40, limit=20 to read lines 40-59). Do NOT use Bash with sed, head, or tail — those require permission prompts and will interrupt the review.
+
+Answer these questions:
+
+1. **Problem & solution**: What problem is the author solving? How is the solution organized?
+2. **Separation of concerns**: Is there a clear division of responsibilities? Are layers/modules properly separated?
+3. **Encapsulation**: If a bug shows up in this code, is ownership obvious? Are implementation details properly hidden?
+4. **Intent test**: Does this look like deliberate design, or like generated code pasted without thought?
+5. **Data flow**: Trace how domain objects move through the new code. Are the same entities fetched repeatedly from storage? Could methods accept pre-resolved objects to reduce hidden I/O and simplify testing?
+
+Apply these standards:
+- Strategy over optionality (explicit paths, not feature flags for everything)
+- Composition over inheritance
+- Rich domain models over primitive obsession
+- KISS/YAGNI — no unnecessary abstractions or premature generalization
+- Single Responsibility Principle
+- Accept resolved domain objects, not raw IDs — when multiple methods in a class each fetch the same entity by ID internally, the API boundary should require callers to provide the resolved object instead (reduces hidden I/O, simplifies testing, makes data flow explicit)
+
+Output your findings as a JSON array. Each finding:
+{
+  "file": "path/to/file.ext",
+  "line": 42,
+  "category": "separation-of-concerns" | "encapsulation" | "naming" | "design-intent" | "consistency" | "complexity",
+  "severity": "concern" | "suggestion" | "question",
+  "description": "Clear explanation of the finding"
+}
+
+After the JSON array, answer the four questions we started with. Remember that our focus is on the application as a whole.
+```
+
+#### Agent B: Anti-Pattern Review (Python only)
+
+Prompt template (fill in `{DIFF}`, `{PR_TITLE}`):
+
+```
+You are reviewing PR "{PR_TITLE}" for common Python anti-patterns. Analyze ONLY the added lines (lines starting with `+`) in `.py` files from the diff below.
+
+<diff>
+{DIFF}
+</diff>
+
+IMPORTANT: When you need to view specific line ranges from a file, use the Read tool with offset and limit parameters (e.g., offset=40, limit=20 to read lines 40-59). Do NOT use Bash with sed, head, or tail — those require permission prompts and will interrupt the review.
+
+Flag ONLY these specific anti-patterns:
+
+1. **bare-dicts**: Using `dict`, `Dict`, untyped dictionaries, or `TypedDict` where a Pydantic `BaseModel` or `@dataclass` should be used for domain data. Plain dicts are acceptable for transient mappings (e.g., kwargs, headers), but NOT for structured domain objects.
+
+2. **error-suppression**: Catching exceptions and returning None/default/empty to hide failures. Code should fail fast and let errors propagate. Acceptable ONLY when the docstring explicitly documents why suppression is intentional.
+
+3. **missing-types**: Bare `list`, bare `dict`, `Any`, or missing argument/return type annotations on functions/methods. Every function signature should have complete type annotations.
+
+4. **type-ignore**: `# type: ignore` comments. These should never appear without a specific error code (e.g., `# type: ignore[assignment]`) and a justifying comment.
+
+5. **noqa**: `# noqa` comments. Should be rare and always include the specific rule code and a justifying comment.
+
+6. **f-string-logging**: Using f-strings or `.format()` in `logger.*()` / `log.*()` calls instead of structlog keyword arguments. Bad: `logger.info(f"User {user_id}")`. Good: `logger.info("user action", user_id=user_id)`.
+
+Rules:
+- ONLY flag patterns in added lines (starting with `+`).
+- Use the NEW file line numbers (right side of the diff) for line references.
+- If a file is not a `.py` file, skip it entirely.
+- Do NOT flag imports, test files, or configuration files for missing-types.
+
+Output your findings as a JSON array. Each finding:
+{
+  "file": "path/to/file.ext",
+  "line": 42,
+  "pattern": "bare-dicts" | "error-suppression" | "missing-types" | "type-ignore" | "noqa" | "f-string-logging",
+  "severity": "concern" | "suggestion",
+  "snippet": "the offending line of code",
+  "fix": "what the code should look like instead, or why it matters"
+}
+
+After the JSON array, write a 2-3 sentence summary of the anti-pattern assessment.
+
+If there are no findings, return an empty array and a summary saying no anti-patterns were detected.
+```
+
+#### Agent C: Change Summary
+
+Prompt template (fill in `{DIFF}`, `{PR_TITLE}`, `{PR_AUTHOR}`, `{CHANGED_FILES_COUNT}`, `{ADDITIONS}`, `{DELETIONS}`):
+
+```
+You are summarizing PR "{PR_TITLE}" by {PR_AUTHOR} ({ADDITIONS} additions, {DELETIONS} deletions across {CHANGED_FILES_COUNT} files). Your job is to help reviewers understand the change — NOT to evaluate or critique it.
+
+Here is the full diff:
+
+<diff>
+{DIFF}
+</diff>
+
+IMPORTANT: Use Glob, Grep, and Read to explore the surrounding codebase so you can describe the existing state accurately. When you need to view specific line ranges from a file, use the Read tool with offset and limit parameters (e.g., offset=40, limit=20 to read lines 40-59). Do NOT use Bash with sed, head, or tail — those require permission prompts and will interrupt the review.
+
+Produce exactly three sections:
+
+1. **Existing State** — What currently exists in the codebase that this PR touches. Describe the purpose of the affected modules/files, key interfaces or classes, and how they fit into the broader system. For entirely new files, describe the area of the codebase where they are being added and what exists there today.
+
+2. **What Is Changing** — Concretely list: new files/classes/functions introduced, existing code modified, code deleted, and any config or dependency changes. Use specific names (class names, function names, file paths). Keep it factual and concise.
+
+3. **Implementation Approach** — Describe HOW the author implemented the change: design patterns used, integration strategy with existing code, key abstractions introduced, and notable technical choices.
+
+Rules:
+- Stay under 500 words total.
+- Be factual and descriptive, NOT evaluative. Do not say "good", "bad", "should", "concern", or make suggestions.
+- Do not produce findings, suggestions, or a JSON array. Plain prose only.
+- Use specific names from the code (class names, function names, file paths).
+```
+
+### Step 3: Aggregate and Present Report
+
+Once all three agents complete, combine their results into this format:
+
+```
+## PR #<NUMBER> Analysis: <TITLE>
+Author: <author> | Changes: +<additions> -<deletions> across <N> files
+
+### Change Summary
+<Full output from Agent C, preserving its three sub-sections:>
+
+#### Existing State
+<Agent C existing state section>
+
+#### What Is Changing
+<Agent C what is changing section>
+
+#### Implementation Approach
+<Agent C implementation approach section>
+
+### Architecture Assessment
+<2-3 sentence summary from Agent A>
+
+### Anti-Pattern Assessment
+<2-3 sentence summary from Agent B>
+
+### Findings
+| # | File | Line(s) | Category | Severity | Description |
+|---|------|---------|----------|----------|-------------|
+| 1 | path/to/file.py | 42 | bare-dicts | concern | Using plain dict for user profile data — should be a Pydantic model |
+| 2 | path/to/other.py | 15-20 | separation-of-concerns | suggestion | Database query mixed with business logic |
+| ... | | | | | |
+
+### Suggested Verdict
+<APPROVE | COMMENT | REQUEST_CHANGES> — <one sentence reasoning>
+```
+
+Rules for the suggested verdict:
+- **REQUEST_CHANGES**: Any finding with severity "concern" that indicates a bug, security issue, or design flaw
+- **COMMENT**: Findings exist but are all suggestions/questions
+- **APPROVE**: No findings or only minor suggestions
+
+### Step 4: Ask User What to Do Next
+
+Use AskUserQuestion with these options:
+
+```
+Question: "How would you like to proceed with these findings?"
+Header: "PR Review"
+Options:
+  - Post all findings as PR review: Creates a pending review with all findings as comments
+  - Select which findings to post: Let me choose which findings to include
+  - Done, don't post: End the review without posting
+```
+
+If the user selects "Post all findings" or "Select which findings", transition to the **Review Posting Workflow** below. Map each finding to a review comment using the file path and line number from the findings table.
+
+If the user selects "Done", end cleanly.
+
+---
+
+## Review Posting Workflow
+
+Use this workflow to post review comments to GitHub. This is used either as the second phase after automated analysis, or standalone when the user wants to post a review directly.
+
+### When to Use
+
+- After automated analysis when user wants to post findings
+- Reviewing pull requests manually
 - Adding code suggestions to PRs
 - Posting review comments with the gh CLI
 
-## Prerequisites
-
-**CRITICAL: Check if gh CLI is installed before attempting to use this skill.**
-
-### Check for gh CLI
-
-Before starting any PR review workflow, verify the gh CLI is available:
-
-```bash
-gh --version
-```
-
-**If gh is not installed:**
-
-1. **Stop immediately** - Do not attempt to run gh api commands
-2. **Inform the user** with this message:
-
-```
-The GitHub CLI (gh) is required for this skill but is not installed.
-
-Please install it from: https://cli.github.com/
-
-Installation options:
-- macOS: brew install gh
-- Windows: winget install GitHub.cli
-- Linux: See https://cli.github.com/ for your distro
-
-After installing, authenticate with:
-  gh auth login
-
-Then try your PR review request again.
-```
-
-3. **Do not proceed** with the review workflow until gh is installed
-
-### After Installation
-
-Once gh is installed, users must authenticate:
-```bash
-gh auth login
-```
-
-## Core Workflow
+### Core Workflow
 
 **REQUIRED STEPS (do not skip):**
 
-1. **Check gh CLI is installed** - Run `gh --version` to verify
-2. **Draft the review** - Analyze PR and prepare all comments
-3. **Show user exactly what will be posted** - Use AskUserQuestion with yes/no
-4. **Get explicit approval** - Wait for user confirmation
-5. **Post the review** - Only after approval
+1. **Draft the review** - Analyze PR and prepare all comments
+2. **Show user exactly what will be posted** - Use AskUserQuestion with yes/no
+3. **Get explicit approval** - Wait for user confirmation
+4. **Post the review** - Only after approval
 
 ### Approval Pattern
 
@@ -154,13 +329,12 @@ gh repo view --json owner,name
 
 ### Syntax Rules
 
-✅ **DO:**
 - Use single quotes around parameters with `[]`: `'comments[][path]'`
 - Use `-f` for string values
 - Use `-F` for numeric values (line numbers)
 - Use triple backticks with `suggestion` identifier for code suggestions
 
-❌ **DON'T:**
+**DON'T:**
 - Use double quotes around `comments[][]` parameters
 - Mix up `-f` and `-F` flags
 - Forget to get commit SHA first
@@ -308,3 +482,7 @@ gh api repos/:owner/:repo/pulls/123/reviews/<REVIEW_ID>/events \
 - PR author gets one notification with full context
 - Can refine comments before posting
 - Professional, organized reviews
+
+## Error Handling
+
+If the gh cli tool is not installed or is not authenticated, escalate the issue to the user.

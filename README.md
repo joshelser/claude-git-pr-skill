@@ -1,10 +1,28 @@
 # GitHub PR Review Skill for Claude Code
 
-A Claude Code skill that ensures consistent, professional GitHub pull request reviews using the `gh` CLI with pending reviews and code suggestions.
+> **Fork notice:** This is a fork of [aidankinzett/claude-git-pr-skill](https://github.com/aidankinzett/claude-git-pr-skill). See [what changed](#whats-changed-in-this-fork) below.
+
+A Claude Code skill for full-lifecycle GitHub pull request reviews — from automated multi-agent analysis to posting batched review comments via the `gh` CLI.
+
+## What's Changed in This Fork
+
+The original skill focused on the **posting workflow** (pending reviews, code suggestions, approval flow). This fork adds a **multi-faceted analysis phase** that runs before posting:
+
+- **Three parallel review agents** — Architecture review, anti-pattern detection (Python), and change summary run concurrently as Explore sub-agents
+- **Architecture review** — Evaluates separation of concerns, encapsulation, design intent, data flow, and consistency with existing codebase patterns
+- **Anti-pattern detection** — Flags bare dicts, error suppression, missing types, unjustified type-ignore/noqa, and f-string logging in Python code
+- **Change summary** — Factual, non-evaluative description of existing state, what changed, and implementation approach
+- **Consolidated report** — Aggregates all findings into a structured table with a suggested verdict (APPROVE/COMMENT/REQUEST_CHANGES)
+- **Interactive post-analysis flow** — Choose to post all findings, select specific ones, or skip posting entirely
+- **Large PR handling** — Agents prioritize architecturally significant files for PRs with 500+ changed lines
+- **Simplified error handling** — Removed upfront gh CLI prerequisite check in favor of escalating to the user on failure
+
+See [CHANGELOG.md](CHANGELOG.md) for the full history.
 
 ## What This Skill Does
 
 This skill teaches Claude to:
+- **Analyze PRs with parallel sub-agents** for architecture, anti-patterns, and change summarization
 - **Always use pending reviews** to batch comments (even under time pressure)
 - **Create code suggestions** using the ```suggestion syntax
 - **Choose the right event type** (COMMENT, APPROVE, or REQUEST_CHANGES)
@@ -18,7 +36,7 @@ Install directly from the marketplace using Claude Code:
 
 ```bash
 # Add this marketplace
-/plugin marketplace add aidankinzett/claude-git-pr-skill
+/plugin marketplace add joshelser/claude-git-pr-skill
 
 # Install the plugin
 /plugin install github-pr-review
@@ -36,7 +54,7 @@ Install directly from the marketplace using Claude Code:
       "name": "github-pr-skills",
       "source": {
         "source": "github",
-        "repo": "aidankinzett/claude-git-pr-skill"
+        "repo": "joshelser/claude-git-pr-skill"
       }
     }
   ],

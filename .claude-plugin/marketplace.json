@@ -1,21 +1,21 @@
 {
   "name": "github-pr-skills",
   "owner": {
-    "name": "Aidan Kinzett",
+    "name": "Josh Elser (forked from Aidan Kinzett)",
     "email": "[email protected]"
   },
   "metadata": {
-    "description": "Professional GitHub PR review skills for Claude Code",
-    "version": "1.1.1"
+    "description": "GitHub PR review skill for Claude Code",
+    "version": "1.2.0"
   },
   "plugins": [
     {
       "name": "github-pr-review",
       "source": "./github-pr-review",
-      "description": "Professional GitHub PR reviews with pending reviews, code suggestions, and user approval workflow",
-      "version": "1.1.1",
+      "description": "Mutli-faceted Github Pull-Request review skill.",
+      "version": "1.2.0",
       "author": {
-        "name": "Aidan Kinzett"
+        "name": "Josh Elser (forked from Aidan Kinzett)"
       },
       "keywords": ["github", "pr", "review", "code-suggestions", "gh-cli"]
     }

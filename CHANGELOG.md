@@ -56,13 +56,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - **Nested backticks syntax** - Fixed markdown rendering issue in code example (5 backticks for outer block)
 
-## [Unreleased]
+## [1.2.0] - 2026-03-06
 
-### Planned
-- Multi-line code suggestion examples
-- Additional event type scenarios
-- Integration with PR templates
-- Support for review threads and conversations
+### Added
+- **Multi-agent parallel analysis** - Launches three Explore sub-agents concurrently (architecture review, anti-pattern detection, change summary) for comprehensive PR analysis
+- **Architecture review agent** - Evaluates separation of concerns, encapsulation, design intent, data flow, and consistency with existing codebase patterns
+- **Anti-pattern detection agent** - Flags Python-specific anti-patterns: bare dicts, error suppression, missing types, type-ignore/noqa without justification, f-string logging
+- **Change summary agent** - Produces factual, non-evaluative summaries covering existing state, what changed, and implementation approach
+- **Consolidated report format** - Aggregates all agent findings into a structured report with findings table and suggested verdict
+- **Interactive post-analysis flow** - Asks user whether to post all findings, select specific findings, or skip posting
+- **Large PR handling** - Instructs agents to prioritize architecturally significant files for PRs with 500+ changed lines
+- **Suggested verdict logic** - Automatically recommends APPROVE/COMMENT/REQUEST_CHANGES based on finding severities
+
+### Changed
+- **Full-lifecycle workflow** - Restructured from a posting-only skill to a two-phase analyze-then-post workflow
+- **Allowed tools** - Changed from `AskUserQuestion` to `Bash(gh:*)` for direct gh CLI access
+- **Core workflow simplified** - Reduced posting steps from 5 to 4 by moving gh CLI check to error handling
+- **Streamlined syntax docs** - Removed emoji markers from DO/DON'T sections
+
+### Removed
+- **Standalone gh CLI prerequisite check** - Replaced with error handling section that escalates to the user if gh is not installed or authenticated
+- **Planned section** - Removed speculative future features from changelog
+
+## [Unreleased]
 
 ---
 
