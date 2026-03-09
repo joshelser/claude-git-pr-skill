@@ -65,6 +65,7 @@ Answer these questions:
 3. **Encapsulation**: If a bug shows up in this code, is ownership obvious? Are implementation details properly hidden?
 4. **Intent test**: Does this look like deliberate design, or like generated code pasted without thought?
 5. **Data flow**: Trace how domain objects move through the new code. Are the same entities fetched repeatedly from storage? Could methods accept pre-resolved objects to reduce hidden I/O and simplify testing?
+6. **Architectural commitment**: Does this PR make decisions — coupling to a specific vendor/implementation, establishing new patterns, choosing data formats or storage strategies — that will be expensive to reverse? Is the level of commitment proportionate to the problem? Look for vendor-specific types leaking into core interfaces, patterns that future code will be forced to follow, and tight coupling where the codebase already shows the need for flexibility.
 
 Apply these standards:
 - Strategy over optionality (explicit paths, not feature flags for everything)
@@ -73,17 +74,18 @@ Apply these standards:
 - KISS/YAGNI — no unnecessary abstractions or premature generalization
 - Single Responsibility Principle
 - Accept resolved domain objects, not raw IDs — when multiple methods in a class each fetch the same entity by ID internally, the API boundary should require callers to provide the resolved object instead (reduces hidden I/O, simplifies testing, makes data flow explicit)
+- Proportion commitment to certainty — the harder a decision is to reverse, the more it deserves an abstraction boundary. Internal helpers can be inlined (YAGNI); external service integrations, data formats baked into storage, and patterns that every future feature must follow deserve interfaces or extension points. When the codebase already abstracts similar concerns (e.g., multiple auth backends), a new concrete dependency that bypasses that abstraction is a red flag.
 
 Output your findings as a JSON array. Each finding:
 {
   "file": "path/to/file.ext",
   "line": 42,
-  "category": "separation-of-concerns" | "encapsulation" | "naming" | "design-intent" | "consistency" | "complexity",
+  "category": "separation-of-concerns" | "encapsulation" | "naming" | "design-intent" | "consistency" | "complexity" | "architectural-commitment",
   "severity": "concern" | "suggestion" | "question",
   "description": "Clear explanation of the finding"
 }
 
-After the JSON array, answer the four questions we started with. Remember that our focus is on the application as a whole.
+After the JSON array, answer the six questions we started with. Remember that our focus is on the application as a whole.
 ```
 
 #### Agent B: Anti-Pattern Review (Python only)
@@ -153,7 +155,7 @@ Produce exactly three sections:
 
 1. **Existing State** — What currently exists in the codebase that this PR touches. Describe the purpose of the affected modules/files, key interfaces or classes, and how they fit into the broader system. For entirely new files, describe the area of the codebase where they are being added and what exists there today.
 
-2. **What Is Changing** — Concretely list: new files/classes/functions introduced, existing code modified, code deleted, and any config or dependency changes. Use specific names (class names, function names, file paths). Keep it factual and concise.
+2. **What Is Changing** — Concretely list: new files/classes/functions introduced, existing code modified, code deleted, and any config or dependency changes. Call out any new external service integrations or vendor SDK dependencies introduced, and any new architectural patterns established. Use specific names (class names, function names, file paths). Keep it factual and concise.
 
 3. **Implementation Approach** — Describe HOW the author implemented the change: design patterns used, integration strategy with existing code, key abstractions introduced, and notable technical choices.
 
