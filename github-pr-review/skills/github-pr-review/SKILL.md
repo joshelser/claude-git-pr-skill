@@ -1,7 +1,7 @@
 ---
 name: github-pr-review
 description: Use when reviewing GitHub pull requests with gh CLI - creates pending reviews with code suggestions, batches comments, and chooses appropriate event types (COMMENT/APPROVE/REQUEST_CHANGES)
-allowed-tools: Bash(gh:*)
+allowed-tools: Bash(gh:*), Bash(python3:*), Bash(mkdir:*), Bash(rm:*)
 ---
 
 # GitHub PR Review
@@ -18,20 +18,50 @@ Full-lifecycle PR review skill: **analyze** a PR with parallel sub-agents, prese
 
 Use this workflow when you need to review a PR. It fetches the diff, launches three parallel analysis agents, and presents a consolidated report.
 
-### Step 1: Fetch PR Data
+### Step 1: Fetch & Cache All PR Data
+
+**Fetch everything upfront with exactly 3 `gh` calls**, then work from local files for the rest of the review. This avoids redundant network round-trips.
+
+The temp directory is namespaced by repo and PR number to avoid collisions: `/tmp/pr-review-<OWNER>-<REPO>-<PR_NUMBER>`.
 
 ```bash
-# Get PR metadata
-gh pr view <PR_NUMBER> --json title,author,additions,deletions,changedFiles,commits,baseRefName,headRefName
+# Call 1: Get repo owner/name, create workspace, and save repo info
+# This single command fetches repo info, creates the temp dir, and saves the JSON
+python3 -c "
+import subprocess, json, os
+repo = json.loads(subprocess.run(['gh', 'repo', 'view', '--json', 'owner,name'], capture_output=True, text=True).stdout)
+owner = repo['owner']['login']
+name = repo['name']
+d = f'/tmp/pr-review-{owner}-{name}-<PR_NUMBER>'
+os.makedirs(d, exist_ok=True)
+with open(f'{d}/repo.json', 'w') as f:
+    json.dump(repo, f)
+print(d)
+"
+# Prints the workspace path, e.g.: /tmp/pr-review-acme-webapp-42
+# Use this path for all subsequent commands.
 
-# Get the full diff
-gh pr diff <PR_NUMBER>
+# Call 2: Get ALL PR metadata in one shot (title, author, stats, commit SHA)
+gh pr view <PR_NUMBER> --json title,author,additions,deletions,changedFiles,commits,baseRefName,headRefName,url > /tmp/pr-review-<OWNER>-<REPO>-<PR_NUMBER>/metadata.json
 
-# Get the latest commit SHA (needed if posting later)
-gh pr view <PR_NUMBER> --json commits --jq '.commits[-1].oid'
+# Call 3: Get the full diff and save locally
+gh pr diff <PR_NUMBER> > /tmp/pr-review-<OWNER>-<REPO>-<PR_NUMBER>/diff.patch
 ```
 
-Store the diff text, PR title, author, additions/deletions counts, and changed file count for use in the agent prompts.
+Then extract the fields you need from the cached files:
+
+```bash
+# Extract commit SHA from cached metadata (no gh calls)
+python3 -c "
+import json
+meta = json.load(open('/tmp/pr-review-<OWNER>-<REPO>-<PR_NUMBER>/metadata.json'))
+print(meta['commits'][-1]['oid'])
+" > /tmp/pr-review-<OWNER>-<REPO>-<PR_NUMBER>/commit_sha.txt
+```
+
+Use the Read tool to load `/tmp/pr-review-<OWNER>-<REPO>-<PR_NUMBER>/metadata.json`, `/tmp/pr-review-<OWNER>-<REPO>-<PR_NUMBER>/repo.json`, and `/tmp/pr-review-<OWNER>-<REPO>-<PR_NUMBER>/diff.patch` into your context. Extract the PR title, author, additions/deletions counts, changed file count, commit SHA, and repo owner/name for use in agent prompts and later review creation.
+
+**From this point forward, NEVER call `gh pr view`, `gh pr diff`, or `gh repo view` again. All data is local.**
 
 ### Step 2: Launch Three Explore Sub-Agents in Parallel
 
@@ -279,14 +309,12 @@ Options:
 
 #### Calculating diff positions
 
-The `position` for each comment must be computed from the PR diff. Use this approach:
+The `position` for each comment must be computed from the cached PR diff. **Read from the local file — do NOT call `gh pr diff` again.**
 
 ```bash
-# Get the diff and calculate positions with a Python helper
+# Calculate positions from the CACHED diff (no network call)
 python3 -c "
-import subprocess
-
-diff = subprocess.run(['gh', 'pr', 'diff', '<PR_NUMBER>', '--repo', '<OWNER>/<REPO>'], capture_output=True, text=True).stdout
+diff = open('/tmp/pr-review-<OWNER>-<REPO>-<PR_NUMBER>/diff.patch').read()
 
 file = ''
 pos = 0
@@ -345,12 +373,14 @@ The user will choose the event type (APPROVE, REQUEST_CHANGES, COMMENT) themselv
 
 ### Getting Prerequisites
 
-```bash
-# Get commit SHA
-gh pr view <PR_NUMBER> --json commits --jq '.commits[-1].oid'
+All data was cached in Step 1. No additional `gh` calls needed.
 
-# Repository info (usually auto-detected by gh)
-gh repo view --json owner,name
+```bash
+# Commit SHA (from cached metadata — no gh call)
+cat /tmp/pr-review-<OWNER>-<REPO>-<PR_NUMBER>/commit_sha.txt
+
+# Repository owner/name (from cached repo info — no gh call)
+cat /tmp/pr-review-<OWNER>-<REPO>-<PR_NUMBER>/repo.json
 ```
 
 ### Required Parameters (JSON body)
@@ -425,10 +455,12 @@ const example = "value";
 | Submitting/publishing the review | NEVER submit — only create pending reviews. The user publishes on GitHub. |
 | Using `-f 'comments[][...]'` array syntax | Use JSON input via `--input -` instead — the array syntax is unreliable and maps to GraphQL types |
 | Using `line`/`side` instead of `position` | Use `position` (diff hunk position). `line` and `side` are NOT valid on `DraftPullRequestReviewComment` |
-| Using file line numbers as position | `position` is the line index within the diff, NOT the file line number. Calculate it from `gh pr diff` output |
+| Using file line numbers as position | `position` is the line index within the diff, NOT the file line number. Calculate it from the cached `diff.patch` file |
 | "Only one comment so no need for pending" | Use pending anyway - consistent workflow, allows adding more later |
-| Not getting commit SHA | Run `gh pr view <NUMBER> --json commits --jq '.commits[-1].oid'` |
+| Not getting commit SHA | Read from `/tmp/pr-review-<OWNER>-<REPO>-<PR>/commit_sha.txt` (cached in Step 1) |
 | Calling the /events endpoint | FORBIDDEN — never call `/reviews/<ID>/events`. User publishes manually. |
+| Re-fetching diff or metadata | All data is cached in `/tmp/pr-review-<OWNER>-<REPO>-<PR>` from Step 1. Read from local files. |
+| Not cleaning up temp files | Always `rm -rf /tmp/pr-review-<PR>` when done, even on error. |
 
 ## Red Flags - You're About to Violate the Pattern
 
@@ -443,6 +475,8 @@ Stop if you're thinking:
 - **"User already approved the review idea, so I'll skip the approval step"**
 - **"I'll post it and then tell them what I posted"**
 - **"The approval step slows things down"**
+- **"I need to fetch the diff again for position calculation"**
+- **"Let me call gh pr view to get the commit SHA"**
 - **"I'll check for gh later, let me draft the review first"**
 - **"gh is probably installed, no need to check"**
 - **"I'll submit/publish the review since the user approved the draft"**
@@ -495,11 +529,29 @@ You'll review and publish it yourself on GitHub.
 Ready to create this draft review?
 ```
 
-**Step 2: Calculate diff positions**
+**Step 2: Calculate diff positions from cached diff**
 
 ```bash
-# Use the Python helper from "Calculating diff positions" to find
-# the position values for each line you want to comment on.
+# Reads from /tmp/pr-review-acme-webapp-123/diff.patch — NO gh call
+python3 -c "
+diff = open('/tmp/pr-review-acme-webapp-123/diff.patch').read()
+file = ''
+pos = 0
+for line in diff.split('\n'):
+    if line.startswith('diff --git'):
+        file = ''
+        pos = 0
+    elif line.startswith('+++ b/'):
+        file = line[6:]
+        pos = 0
+    elif line.startswith('@@'):
+        pos = 0
+    if file:
+        pos += 1
+        # Search for lines we want to comment on
+        if 'token' in line.lower() or 'error' in line.lower():
+            print(f'file={file} pos={pos}')
+"
 # Example output: file=src/auth.ts pos=20, file=src/auth.ts pos=35, file=tests/auth.test.ts pos=12
 ```
 
@@ -535,6 +587,12 @@ JSONEOF
 # NEVER call the /events endpoint to submit.
 ```
 
+**Step 4: Clean up cached data**
+
+```bash
+rm -rf /tmp/pr-review-acme-webapp-123
+```
+
 ## Real-World Impact
 
 **Without this pattern:**
@@ -548,6 +606,16 @@ JSONEOF
 - No risk of the skill publishing something the user didn't intend
 - Professional, organized reviews
 
+## Cleanup
+
+After the review is complete (whether the user chose to draft or not), clean up the cached data:
+
+```bash
+rm -rf /tmp/pr-review-<OWNER>-<REPO>-<PR_NUMBER>
+```
+
+Always clean up, even if the review was abandoned or an error occurred.
+
 ## Error Handling
 
-If the gh cli tool is not installed or is not authenticated, escalate the issue to the user.
+If the gh cli tool is not installed or is not authenticated, escalate the issue to the user. If an error occurs mid-review, still clean up the temp directory before reporting the error.

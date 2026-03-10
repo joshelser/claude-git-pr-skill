@@ -5,6 +5,23 @@ All notable changes to the github-pr-review skill will be documented in this fil
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+- TODO
+
+## [1.3.1] - 2026-03-10
+
+### Changed
+- **Fetch-once caching workflow** — All PR data (metadata, diff, repo info) is now fetched in exactly 3 `gh` calls at the start and cached to `/tmp/pr-review-<OWNER>-<REPO>-<PR_NUMBER>/`. The temp path is namespaced by repo owner, name, and PR number to avoid collisions. All subsequent operations (agent prompts, diff position calculation, commit SHA lookup) read from local files instead of making redundant `gh` CLI calls.
+- **Diff position calculation** — Now reads from the cached `diff.patch` file instead of spawning a subprocess that calls `gh pr diff` again.
+- **Allowed tools expanded** — Added `python3`, `mkdir`, `rm` to skill's allowed-tools for local file management and position calculation.
+
+### Added
+- **Cleanup step** — Temp directory is cleaned up after every review (success, cancellation, or error).
+- **Repo info caching** — Repository owner/name cached alongside metadata and diff.
+- **New red flags** — Warns against re-fetching diff or metadata after Step 1.
+- **New common mistakes** — Documents re-fetching and cleanup omission as common mistakes.
+
 ## [1.3.0] - 2026-03-09
 
 ### Added
