@@ -6,14 +6,14 @@
   },
   "metadata": {
     "description": "GitHub PR review skill for Claude Code",
-    "version": "1.3.1"
+    "version": "1.3.2"
   },
   "plugins": [
     {
       "name": "github-pr-review",
       "source": "./github-pr-review",
       "description": "Mutli-faceted Github Pull-Request review skill.",
-      "version": "1.3.1",
+      "version": "1.3.2",
       "author": {
         "name": "Josh Elser (forked from Aidan Kinzett)"
       },
